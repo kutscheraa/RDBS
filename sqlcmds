@@ -1,0 +1,176 @@
+--a) SELECT (4x):
+-- 1) Získání průměrného počtu řádků v tabulkách pro schéma 'defaultdb'
+SELECT AVG(table_rows) AS average_rows
+FROM information_schema.tables
+WHERE table_schema = 'defaultdb';
+
+-- 2) Vnořený SELECT:
+-- Výpis knih se slevou
+SELECT
+    books.title,
+    books.price,
+    (
+        SELECT discount_amount
+        FROM product_discounts
+        WHERE product_discounts.book_id = books.book_id
+        LIMIT 1
+    ) AS discount_amount
+FROM
+    books
+WHERE
+    books.book_id IN (SELECT book_id FROM product_discounts);
+
+-- 3) Analytická funkce (např. COUNT):
+-- Získání počtu knih pro každou hlavní kategorii
+SELECT pbc.category_name, COUNT(*) AS pocet_knih
+FROM defaultdb.books b
+JOIN defaultdb.primary_book_categories pbc ON b.primary_category_id = pbc.category_id
+GROUP BY b.primary_category_id;
+
+
+--4) JOIN pro hierarchii:
+-- Získání detailů o knihách (název knihy, jméno autora a název hlavní kategorie) pomocí JOIN
+SELECT books.title, authors.author_name
+FROM defaultdb.books
+INNER JOIN defaultdb.authors ON defaultdb.books.author_id = defaultdb.authors.author_id;
+
+--VIEW (1x):
+-- Vytvoření pohledu s detaily o transakcích
+CREATE VIEW user_order_payment_info AS
+SELECT
+    o.order_id,
+    u.username,
+    o.order_date,
+    o.total_amount,
+    p.payment_method,
+    p.transaction_id,
+    p.payment_date
+FROM
+    orders o
+    INNER JOIN users u ON o.user_id = u.user_id
+    LEFT JOIN payments p ON o.order_id = p.order_id;
+
+-- INDEX (1x):
+-- Vytvoření indexu na sloupec 'price' v tabulce 'books'
+CREATE INDEX idx_book_price ON defaultdb.books(price);
+DROP INDEX idx_book_price ON defaultdb.books;
+
+CREATE INDEX orders_pending_index ON orders (order_id)
+WHERE status = 'Pending';
+
+
+
+--FUNCTION (1x):
+-- Vytvoření funkce pro výpočet celkové ceny objednávky
+CREATE FUNCTION calculate_order_total(order_id INT)
+RETURNS DECIMAL(10, 2)
+BEGIN
+    DECLARE total_amount DECIMAL(10, 2);
+
+    SELECT COALESCE(SUM(quantity * price), 0) INTO total_amount
+    FROM order_items
+    JOIN books ON order_items.book_id = books.book_id
+    WHERE order_items.order_id = order_id;
+
+    RETURN total_amount;
+END;
+
+SELECT order_id, calculate_order_total(5) AS total_amount
+FROM orders
+WHERE order_id = 4;
+DROP FUNCTION IF EXISTS calculate_order_total;
+
+--PROCEDURE (1x):
+-- Vytvoření procedury pro generování slev
+CREATE PROCEDURE generate_discounts()
+BEGIN
+    DECLARE done INT DEFAULT 0;
+    DECLARE book_id_val INT;
+    DECLARE title_val VARCHAR(255);
+    DECLARE price_val DECIMAL(10, 2);
+    DECLARE discount_exists INT;
+    -- cena nad 500
+    DECLARE cur_products CURSOR FOR SELECT book_id, title, price FROM books WHERE price > 500;
+    DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = 1;
+    OPEN cur_products;
+    read_loop: LOOP
+        FETCH cur_products INTO book_id_val, title_val, price_val;
+        IF done THEN
+            LEAVE read_loop;
+        END IF;
+        SELECT COUNT(*) INTO discount_exists
+        FROM product_discounts
+        WHERE book_id = book_id_val;
+
+        IF discount_exists = 0 THEN
+            -- 5% - 20%
+            SET @random_discount := RAND() * (0.15) + 0.05;
+            SET @discount_amount := price_val * @random_discount;
+            INSERT INTO product_discounts (book_id, discount_amount)
+            VALUES (book_id_val, @discount_amount);
+        END IF;
+    END LOOP;
+    CLOSE cur_products;
+END;
+
+CALL generate_discounts();
+TRUNCATE product_discounts;
+DROP PROCEDURE IF EXISTS generate_discounts;
+DROP TABLE IF EXISTS product_discounts;
+
+
+--TRIGGER (1x):
+-- Vytvoření triggeru pro sledování změn v tabulce books
+CREATE TRIGGER track_price_changes
+AFTER UPDATE ON books
+FOR EACH ROW
+BEGIN
+  IF NEW.price != OLD.price THEN
+    INSERT INTO books_audit (book_id, field, old_value, new_value, user)
+    VALUES (NEW.book_id, 'price', OLD.price, NEW.price, USER());
+  END IF;
+END;
+
+
+-- Příklad transakce, která upravuje data v tabulce `books`
+START TRANSACTION;
+
+-- Změna dat v tabulce `books`
+UPDATE books SET price = price * 1.1 WHERE author_id = 1;
+
+-- Komitování změn v transakci
+COMMIT;
+
+
+
+--USER (1x):
+-- USER PŘÍKAZY
+CREATE USER 'novy_uzivatel'@'%' IDENTIFIED BY 'heslo123';
+DROP USER 'novy_uzivatel'@'%';
+GRANT SELECT, INSERT, UPDATE, DELETE ON *.* TO 'novy_uzivatel'@'%';
+REVOKE ALL PRIVILEGES ON *.* FROM 'pepa'@'%';
+CREATE ROLE 'loupeznik';
+DROP ROLE 'loupeznik';
+GRANT 'loupeznik' TO 'pepa'@'%';
+REVOKE 'loupeznik' FROM 'pepa'@'%';
+GRANT SELECT, INSERT, UPDATE, DELETE ON *.* TO ROLE 'loupeznik';
+REVOKE ALL PRIVILEGES ON *.* FROM ROLE 'louperznik';
+SELECT USER();
+
+
+
+--LOCK (1x):
+LOCK TABLES
+    books READ,
+    authors WRITE,
+    orders WRITE,
+    order_items WRITE,
+    primary_book_categories WRITE,
+    secondary_book_categories WRITE,
+    addresses WRITE,
+    payments WRITE,
+    carts WRITE,
+    users WRITE;
+
+UNLOCK TABLES;
+
